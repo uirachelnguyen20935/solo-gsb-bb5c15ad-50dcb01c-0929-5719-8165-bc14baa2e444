@@ -3,7 +3,7 @@
 const path = require('path');
 const fs = require('fs');
 const Database = require('better-sqlite3');
-const { schedule, simulateDelay } = require('./scheduler');
+const { schedule, simulateDelay, suggestActorStagger } = require('./scheduler');
 
 let db;
 let createCueTx;
@@ -119,6 +119,14 @@ function computeSchedule() {
  */
 function computeDelaySimulation(cueId, delaySeconds) {
   return simulateDelay(loadCueModels(), cueId, delaySeconds);
+}
+
+/**
+ * 演员错峰建议：从数据库读取正式数据，仅在内存中附加“同一演员相邻提示点
+ * 先后开始”的前置约束后重新排程，不写入任何数据；刷新页面仍是正式排程。
+ */
+function computeActorStagger() {
+  return suggestActorStagger(loadCueModels());
 }
 
 /** 从数据库重建排程器所需的提示点模型 */
@@ -316,6 +324,7 @@ module.exports = {
   getCue,
   computeSchedule,
   computeDelaySimulation,
+  computeActorStagger,
   createCue,
   updateCue,
   deleteCue,

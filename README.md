@@ -10,7 +10,9 @@
 打印走台单与接口中标出。提供按开始时间排序的**走台单**和专用**打印视图**（可直接打印或
 另存为 PDF）。除逐条录入外，还支持 **CSV 批量导入**：排程页选择文件后先**预览**（逐行指出
 字段错误、未知 / 歧义前置引用与文件内依赖环），确认后在**单个事务**内写入全部提示点、
-演员与依赖，失败不留部分数据。
+演员与依赖，失败不留部分数据。排程页还提供只读的**演员错峰建议**：在不改动正式数据的前提下，
+按演员把其提示点串联先后关系后重新排程，供舞台监督查看一版候选走台时间（含每项原时间、
+建议时间、延后量与建议方案中新出现的超时）。
 
 技术栈：Node.js + Express + SQLite（better-sqlite3）+ 原生 HTML/CSS/JavaScript（无前端构建）。
 
@@ -27,8 +29,15 @@ docker compose up -d --build
 
 启动后打开：
 
-- 排程页面（录入 / 编辑 / 重排）：<http://localhost:3000>
+- 排程页面（录入 / 编辑 / 重排，含**延误推演**与**演员错峰建议**卡片）：<http://localhost:3000>
 - 走台单 / 打印视图：<http://localhost:3000/print>
+
+主要 API 地址（端口随 `PORT` 变化，本机默认 **3000**）：
+
+- 正式排程：<http://localhost:3000/api/schedule>
+- 演员错峰建议（只读候选，不写库）：<http://localhost:3000/api/schedule/actor-stagger>
+- 演员时间冲突：<http://localhost:3000/api/conflicts>
+- 完整接口清单见下文「HTTP 接口」。
 
 停止：`docker compose down`（数据保留在命名卷 `cue-data` 中；加 `-v` 可同时删除数据）。
 
@@ -163,6 +172,34 @@ Q9,"带妆彩排，第一段",15,,2:00:00,王小明|李华,Q7|Q8
   等）、`newOverdue`、`newConflicts`（结构同 `/api/conflicts` 条目），并附带完整的
   `baseline` 与 `simulated` 排程结果；非法输入返回 `400`，提示点不存在返回 `404`。
 
+### 演员错峰建议（只读候选，不改动正式数据）
+
+- 在排程页面「**演员错峰建议（只读候选，不改动正式排程）**」卡片中点击「**生成错峰建议**」，
+  系统在内存中计算一版候选走台时间；**不写入数据库**，下方走台单始终是正式排程，
+  刷新页面或点击「**收起建议**」后建议消失，仍显示正式排程。
+- 计算规则：对**每名演员**，将其已成功排程的提示点按**正式开始时间升序、ID 升序**排序，
+  把相邻两项的“前者完成、后者方可开始”关系作为附加前置依赖，与**原有前置依赖合并**后
+  复用同一套排程计算重新求开始 / 结束时间：
+  - 同一演员的提示点在建议方案中不再时间重叠；正式排程中本不重叠的相邻项，附加关系后
+    时间不变；原本已由正式前置关系保证先后的相邻对不会重复添加约束；
+  - 多名演员**共用提示点**时，该提示点的开始时间取所有相关依赖（原前置与各演员前一项）
+    的最大值，其后移会**沿全部相关依赖传递**（包括其他演员的先后链）；
+  - **原本位于环上或被环阻塞的提示点保留“环依赖 / 环阻塞”不可排程标记，不参与错峰**
+    （没有有效开始时间，既不排序也不附加约束）。
+- 结果区展示：
+  - 每项的**原开始 / 原结束、建议开始 / 建议结束、开始与结束延后量**（`+H:MM:SS`，不变显示 `±0:00`）；
+  - **建议方案中新出现的超时**（原排程未超最晚完成、建议排程超过；原本已超时的单独标注
+    “仍超时”，不计为新增）；
+  - 统计：涉及演员、新增先后约束数、建议延后提示点数、新增超时数、演员冲突数变化
+    （原 → 建议）与不参与的环上 / 阻塞项数；
+  - “演员先后关系”链：逐演员展示排序后的提示点链，红色箭头标出正式排程中时间重叠、
+    需要错峰的相邻对。
+- 接口：`GET /api/schedule/actor-stagger`（只读 GET，无请求体、无参数），响应含
+  `summary`、`actorChains`、`actorLinks`、`suggestions`（每项含
+  `baseStart/baseFinish/suggestedStart/suggestedFinish/deltaStart/deltaFinish/
+  newOverdue/participated` 等，环上 / 阻塞项 `participated: false` 且时间字段为 `null`）、
+  `newOverdue`，以及完整的 `baseline` 与 `suggested` 排程结果（结构同 `/api/schedule`）。
+
 ### 打印视图
 
 <http://localhost:3000/print> 提供干净的 A4 走台单（含日期 / 场地 / 舞台监督签名栏与逐项
@@ -179,6 +216,7 @@ Q9,"带妆彩排，第一段",15,,2:00:00,王小明|李华,Q7|Q8
 | `GET` | `/api/cues/:id` | 单个提示点 |
 | `GET` | `/api/schedule` | 完整排程结果（含计算时间、超时 / 环标记、环路、最迟允许开始 `latestStart` 与连锁余量 `chainSlack`、演员冲突 `conflicts`） |
 | `GET` | `/api/conflicts` | 演员时间冲突列表（演员、两项提示点、重叠时段） |
+| `GET` | `/api/schedule/actor-stagger` | **演员错峰建议（只读，不写库）**：按演员串联先后关系后重新排程，返回每项原/建议时间与延后量、建议方案新增超时、演员先后链及完整 baseline/suggested 排程 |
 | `POST` | `/api/schedule/simulate-delay` | 延误推演（纯内存，不写库）：`{ "cueId": 1, "delay": "10" }`，返回受影响提示点的原/模拟时间与变化量、新增超时与新增冲突 |
 | `POST` | `/api/cues` | 新增提示点 |
 | `POST` | `/api/cues/import/preview` | CSV 导入预览：`{ "csv": "…" }`，逐行返回校验错误，不写库 |
@@ -263,6 +301,59 @@ Q9,"带妆彩排，第一段",15,,2:00:00,王小明|李华,Q7|Q8
 }
 ```
 
+`GET /api/schedule/actor-stagger` 响应示例（节选）：
+
+```json
+{
+  "summary": {
+    "actors": 4,
+    "addedLinks": 3,
+    "moved": 1,
+    "newOverdue": 0,
+    "unscheduled": 0,
+    "baseConflicts": 1,
+    "suggestedConflicts": 0
+  },
+  "actorChains": [
+    { "actor": "周航", "cueIds": [2, 6, 5] }
+  ],
+  "actorLinks": [
+    {
+      "actor": "周航",
+      "before": { "id": 2, "ref": "Q2", "title": "第一场演员走位", "earliestStart": 900, "earliestFinish": 2100 },
+      "after": { "id": 6, "ref": "Q6", "title": "台词专项排练", "earliestStart": 1500, "earliestFinish": 2400 },
+      "overlapping": true,
+      "alreadyLinked": false
+    }
+  ],
+  "suggestions": [
+    {
+      "id": 6, "ref": "Q6", "title": "台词专项排练",
+      "actors": ["周航", "陈默"],
+      "participated": true,
+      "inCycle": false, "blockedByCycle": false,
+      "baseStart": 1500, "baseFinish": 2400,
+      "suggestedStart": 2100, "suggestedFinish": 3000,
+      "deltaStart": 600, "deltaFinish": 600,
+      "baseOverdue": false, "suggestedOverdue": false, "newOverdue": false
+    },
+    {
+      "id": 8, "ref": "Q8", "title": "环上提示点",
+      "actors": [],
+      "participated": false,
+      "inCycle": true, "blockedByCycle": false,
+      "baseStart": null, "baseFinish": null,
+      "suggestedStart": null, "suggestedFinish": null,
+      "deltaStart": null, "deltaFinish": null,
+      "baseOverdue": false, "suggestedOverdue": false, "newOverdue": false
+    }
+  ],
+  "newOverdue": [],
+  "baseline": { "cues": ["…完整正式排程（结构同 /api/schedule）…"], "cycle": null, "conflicts": [] },
+  "suggested": { "cues": ["…完整建议排程…"], "cycle": null, "conflicts": [] }
+}
+```
+
 `POST /api/cues/import/preview` 响应示例（含逐行错误；确认导入 `POST /api/cues/import`
 在校验失败时返回 `400` 并附带同结构的 `preview`）：
 
@@ -302,7 +393,7 @@ Q9,"带妆彩排，第一段",15,,2:00:00,王小明|李华,Q7|Q8
 │   ├── server.js          # Express 路由与参数校验（含 CSV 导入预览 / 提交接口）
 │   ├── db.js              # SQLite 建表、CRUD、事务、示例数据、批量导入事务
 │   ├── csvimport.js       # CSV 解析（引号转义）与导入校验（ref 唯一、引用解析、文件内依赖环）
-│   ├── scheduler.js       # 拓扑排程、Tarjan 环检测、超时判定、演员冲突检测
+│   ├── scheduler.js       # 拓扑排程、Tarjan 环检测、超时判定、演员冲突检测、延误推演、演员错峰建议
 │   └── timeutil.js        # 时间解析与格式化
 └── public
     ├── index.html         # 排程主页面

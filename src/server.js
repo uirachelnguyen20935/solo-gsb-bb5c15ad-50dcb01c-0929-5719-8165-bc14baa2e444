@@ -36,6 +36,15 @@ app.get('/api/conflicts', (_req, res) => {
 });
 
 /**
+ * 演员错峰建议：只读，纯内存计算。
+ * 在正式排程基础上按演员把其提示点串成先后关系后重新排程，
+ * 返回每项的原时间 / 建议时间 / 延后量与新增超时；不写入数据库。
+ */
+app.get('/api/schedule/actor-stagger', (_req, res) => {
+  res.json(db.computeActorStagger());
+});
+
+/**
  * 延误推演：纯内存计算，不写入数据库。
  * body: { cueId: number, delay: "10" / "1:30" / 整数秒 ... }（与时长输入一致：纯数字按分钟）
  */

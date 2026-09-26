@@ -7,6 +7,7 @@ let state = {
   conflicts: [], // 正式排程的演员时间冲突
   editingId: null,
   sim: null, // 延误推演结果（null 表示未推演 / 已清除）
+  stagger: null, // 演员错峰建议（只读、仅前端内存持有，刷新即消失）
 };
 
 const els = {
@@ -28,6 +29,8 @@ const els = {
   simResult: document.getElementById('sim-result'),
   scheduleTitle: document.getElementById('schedule-title'),
   scheduleHint: document.getElementById('schedule-hint'),
+  staggerForm: document.getElementById('stagger-form'),
+  staggerResult: document.getElementById('stagger-result'),
   importMask: document.getElementById('import-mask'),
   importFile: document.getElementById('import-file'),
   importPreviewBtn: document.getElementById('btn-import-preview'),
@@ -44,6 +47,8 @@ els.mask.addEventListener('click', (e) => {
 els.form.addEventListener('submit', onSubmit);
 els.simForm.addEventListener('submit', onSimulate);
 document.getElementById('btn-sim-clear').addEventListener('click', clearSimulation);
+els.staggerForm.addEventListener('submit', onStaggerRun);
+document.getElementById('btn-stagger-clear').addEventListener('click', clearStagger);
 document.getElementById('btn-import').addEventListener('click', openImportModal);
 document.getElementById('btn-import-cancel').addEventListener('click', closeImportModal);
 els.importMask.addEventListener('click', (e) => {
@@ -78,6 +83,8 @@ async function refresh() {
   state.conflicts = scheduleResult.conflicts || [];
   // 正式数据已变化（增删改后），内存中的推演结果失效，恢复正式排程视图
   if (state.sim) resetSimulation({ keepInput: true });
+  // 错峰建议同样是只读内存结果，正式数据变化后一并收起
+  if (state.stagger) state.stagger = null;
   // 数据刷新后，上一次导入的成功提示不再适用
   els.okBanner.classList.add('hidden');
   render();
@@ -90,6 +97,7 @@ function render() {
   renderStats();
   renderSimSelect();
   renderSimResult();
+  renderStagger();
   renderTable();
 }
 
@@ -349,6 +357,164 @@ function simRowBadges(a) {
   }
   if (!badges.length) return '<span class="hint">—</span>';
   return badges.join(' ');
+}
+
+/* ---------- 演员错峰建议（只读候选，不落库、不替换正式走台单） ---------- */
+
+async function onStaggerRun(e) {
+  e.preventDefault();
+  try {
+    state.stagger = await CS.api('/api/schedule/actor-stagger');
+    render();
+  } catch (err) {
+    state.stagger = null;
+    render();
+    els.staggerResult.innerHTML = `<div class="form-error stagger-error">生成错峰建议失败：${CS.esc(
+      err.message
+    )}</div>`;
+  }
+}
+
+function clearStagger() {
+  state.stagger = null;
+  els.staggerResult.innerHTML = '';
+}
+
+function renderStagger() {
+  const st = state.stagger;
+  if (!st) {
+    els.staggerResult.innerHTML = '';
+    return;
+  }
+  const s = st.summary;
+  const label = (x) => `${x.ref ? CS.esc(x.ref) + ' ' : ''}「${CS.esc(x.title)}」`;
+  const deltaCell = (d) =>
+    d == null
+      ? '—'
+      : d === 0
+        ? '<span class="sim-delta-zero">±0:00</span>'
+        : `<span class="sim-delta-up">+${CS.fmtDur(d)}</span>`;
+
+  const rows = st.suggestions
+    .map((x) => {
+      if (!x.participated) {
+        return `
+        <tr class="${x.inCycle ? 'row-cycle' : 'row-blocked'}">
+          <td>${x.ref ? CS.esc(x.ref) + ' ' : ''}「${CS.esc(x.title)}」</td>
+          <td class="num">—</td><td class="num">—</td><td class="num">—</td>
+          <td class="num">—</td><td class="num">—</td><td class="num">—</td>
+          <td><span class="badge ${x.inCycle ? 'badge-cycle' : 'badge-blocked'}">${
+            x.inCycle ? '⚠ 环依赖' : '环阻塞'
+          } · 不参与错峰</span></td>
+        </tr>`;
+      }
+      const moved = x.deltaStart > 0;
+      return `
+      <tr class="${x.newOverdue ? 'row-overdue' : moved ? 'row-sim-affected' : ''}">
+        <td>${label(x)}</td>
+        <td class="num">${CS.fmtTime(x.baseStart)}</td>
+        <td class="num">${CS.fmtTime(x.suggestedStart)}</td>
+        <td class="num">${deltaCell(x.deltaStart)}</td>
+        <td class="num">${CS.fmtTime(x.baseFinish)}</td>
+        <td class="num ${x.suggestedOverdue ? 't-overdue' : ''}">${CS.fmtTime(
+          x.suggestedFinish
+        )}</td>
+        <td class="num">${deltaCell(x.deltaFinish)}</td>
+        <td>${
+          x.newOverdue
+            ? '<span class="badge badge-overdue">⚠ 建议方案中新超时</span>'
+            : x.suggestedOverdue
+              ? '<span class="badge badge-overdue">仍超时（正式排程已超时）</span>'
+              : moved
+                ? '<span class="badge stagger-badge">建议延后</span>'
+                : '<span class="badge badge-ok">时间不变</span>'
+        }</td>
+      </tr>`;
+    })
+    .join('');
+
+  const newOverdueBlock = st.newOverdue.length
+    ? `<div class="sim-sub sim-sub-danger">
+         <h4>建议方案中新出现的超时（${st.newOverdue.length}）</h4>
+         <ul>${st.newOverdue
+           .map(
+             (x) =>
+               `<li>${label(x)}：建议结束 ${CS.fmtTime(
+                 x.suggestedFinish
+               )}，比原排程后移 ${CS.fmtDur(
+                 x.deltaFinish
+               )}，新超过最晚完成时间（原结束 ${CS.fmtTime(x.baseFinish)}）</li>`
+           )
+           .join('')}</ul>
+       </div>`
+    : `<div class="sim-sub sim-sub-ok"><h4>建议方案中新出现的超时（0）</h4><span>错峰没有造成新的超时。</span></div>`;
+
+  // 演员先后链：用于说明建议依据；标红基线即重叠的相邻对
+  const baseById = new Map(st.baseline.cues.map((c) => [c.id, c]));
+  const linkKey = (l) => `${l.actor}|${l.before.id}|${l.after.id}`;
+  const overlappingActors = new Set(
+    st.actorLinks.filter((l) => l.overlapping).map(linkKey)
+  );
+  const chainsBlock = st.actorChains.length
+    ? `<div class="sim-sub stagger-chains">
+         <h4>演员先后关系（${st.actorChains.length} 名演员）</h4>
+         <div>${st.actorChains
+           .map((ch) => {
+             const chain = ch.cueIds
+               .map((id, i) => {
+                 const c = baseById.get(id);
+                 const tag = CS.esc(c ? c.ref || c.title : `#${id}`);
+                 if (i === 0) return `<span class="pre-tag">${tag}</span>`;
+                 const prev = ch.cueIds[i - 1];
+                 const overlap = overlappingActors.has(`${ch.actor}|${prev}|${id}`);
+                 return `<span class="stagger-arrow ${
+                   overlap ? 'stagger-arrow-hot' : ''
+                 }" title="${overlap ? '正式排程中二者时间重叠，需错峰' : '附加先后关系'}">→</span>` +
+                   `<span class="pre-tag ${overlap ? 'stagger-hot' : ''}">${tag}</span>`;
+               })
+               .join('');
+             return `<div class="stagger-chain-row"><strong>${CS.esc(
+               ch.actor
+             )}</strong>：${chain}</div>`;
+           })
+           .join('')}</div>
+         <span class="hint">红色箭头表示正式排程中相邻两项时间重叠；灰色为按正式开始时间排序后补充的先后约束（原有前置关系已能保证先后的不再重复添加）。</span>
+       </div>`
+    : '';
+
+  els.staggerResult.innerHTML = `
+    <div class="banner banner-info stagger-banner">
+      📋 <strong>这是只读候选方案，未改动正式排程：</strong>
+      按每名演员的正式开始时间为其提示点补充“前者完成后者才开始”的约束后重新计算；
+      刷新页面或点击“收起建议”即只显示正式排程。
+    </div>
+    <div class="sim-summary">
+      <div class="stat"><div class="num">${s.actors}</div><div class="label">涉及演员</div></div>
+      <div class="stat"><div class="num">${s.addedLinks}</div><div class="label">新增先后约束</div></div>
+      <div class="stat ${s.moved ? 'warn' : ''}"><div class="num">${s.moved}</div><div class="label">建议延后提示点</div></div>
+      <div class="stat ${s.newOverdue ? 'danger' : ''}"><div class="num">${s.newOverdue}</div><div class="label">建议方案新增超时</div></div>
+      <div class="stat ${s.suggestedConflicts ? 'warn' : 'ok-stat'}"><div class="num">${s.baseConflicts} → ${s.suggestedConflicts}</div><div class="label">演员冲突（原 → 建议）</div></div>
+      <div class="stat"><div class="num">${s.unscheduled}</div><div class="label">环上/阻塞（不参与）</div></div>
+    </div>
+    <div class="table-wrap">
+      <table class="cue-table sim-table">
+        <thead>
+          <tr>
+            <th>提示点</th>
+            <th class="num">原开始</th>
+            <th class="num">建议开始</th>
+            <th class="num">开始延后量</th>
+            <th class="num">原结束</th>
+            <th class="num">建议结束</th>
+            <th class="num">结束延后量</th>
+            <th>结果</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    ${newOverdueBlock}
+    ${chainsBlock}`;
 }
 
 /* ---------- 统计与走台单 ---------- */

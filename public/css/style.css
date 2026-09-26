@@ -325,6 +325,30 @@ tr.row-conflict:hover { background: #fdf4e3; }
 
 tr.row-sim-affected { background: #f1f5fb; box-shadow: inset 3px 0 0 #6d8fb3; }
 tr.row-sim-affected:hover { background: #e7eef8; }
+
+/* ---------- 演员错峰建议 ---------- */
+.stagger-card { margin-bottom: 16px; }
+.stagger-form {
+  gap: 14px;
+  padding: 4px 20px 14px;
+  flex-wrap: wrap;
+}
+.stagger-banner { margin: 0 20px 12px; }
+.stat.ok-stat .num { color: var(--ok); }
+.badge.stagger-badge { background: #e1ebf6; color: #2f5373; border: 1px solid #b9cde2; }
+.stagger-error { margin: 0 20px 14px; }
+.stagger-chains .stagger-chain-row {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.stagger-chains .pre-tag.stagger-hot {
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-line);
+  color: var(--warn-ink);
+}
+.stagger-arrow { color: var(--muted); font-size: 12px; }
+.stagger-arrow-hot { color: var(--danger-ink); font-weight: 700; }
+
 .cell-delta {
   display: inline-block;
   margin-left: 4px;

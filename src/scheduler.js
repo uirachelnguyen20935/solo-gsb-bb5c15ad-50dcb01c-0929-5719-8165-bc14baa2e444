@@ -372,6 +372,169 @@ function simulateDelay(inputCues, cueId, delaySeconds) {
   };
 }
 
+/**
+ * 演员错峰建议（纯内存计算，不修改入参，也不涉及数据库）：
+ * 供舞台监督查看一版“候选走台时间”，正式排程数据完全不变。
+ *
+ * 1. 先用 schedule 得到正式（基线）排程；
+ * 2. 对每名演员，取其全部已成功排程的提示点，按正式开始时间升序、ID 升序排序，
+ *    将相邻两项的“前者完成后后者方可开始”关系作为附加前置依赖（环上 / 被环阻塞的
+ *    提示点没有有效时间，既不参与排序也不附加边，保留不可排程标记）；
+ * 3. 在“原有前置 + 错峰附加前置”的合并图上复用 schedule 重新计算开始 / 结束时间：
+ *    - 所有原始依赖边沿“正式开始时间”严格向前，附加边按（正式开始时间, ID）同向，
+ *      故合并图仍是 DAG，不会制造新环；本来不重叠的相邻项附加边后时间不变；
+ *    - 多名演员共用提示点时，其开始时间取所有相关依赖（原前置 + 各演员前一项）
+ *      的最大值，延后再沿全部后继（含其他演员链）传递；
+ * 4. 对比两版结果：逐项给出原时间 / 建议时间 / 延后量，以及建议方案中新出现的超时。
+ */
+function suggestActorStagger(inputCues) {
+  const baseline = schedule(inputCues);
+  const baseById = new Map(baseline.cues.map((c) => [c.id, c]));
+
+  /* ---------- 按演员汇总已排程提示点（环上 / 被阻塞项不参与） ---------- */
+  const cuesByActor = new Map();
+  for (const c of baseline.cues) {
+    if (!c.scheduled) continue;
+    for (const actor of c.actors) {
+      const list = cuesByActor.get(actor);
+      if (list) list.push(c);
+      else cuesByActor.set(actor, [c]);
+    }
+  }
+
+  /* ---------- 每名演员按（正式开始时间, ID）排序，相邻两项附加先后关系 ---------- */
+  const extraPrerequisites = new Map(); // 后项 id -> Set(前项 id)
+  const actorChains = []; // 展示用：演员与其排序后的提示点链
+  const actorLinks = []; // 展示用：每一对相邻项及基线时是否重叠 / 是否本就是前置
+
+  for (const actor of Array.from(cuesByActor.keys()).sort((a, b) =>
+    a.localeCompare(b, 'zh')
+  )) {
+    const sorted = cuesByActor
+      .get(actor)
+      .slice()
+      .sort((a, b) => a.earliestStart - b.earliestStart || a.id - b.id);
+    if (sorted.length < 2) continue; // 只有一项的演员无需错峰
+
+    actorChains.push({ actor, cueIds: sorted.map((c) => c.id) });
+    for (let i = 1; i < sorted.length; i++) {
+      const before = sorted[i - 1];
+      const after = sorted[i];
+      const overlapping = before.earliestFinish > after.earliestStart;
+      const alreadyLinked = after.prerequisites.includes(before.id);
+      actorLinks.push({
+        actor,
+        before: conflictCueRef(before),
+        after: conflictCueRef(after),
+        overlapping,
+        alreadyLinked,
+      });
+      // 原前置已保证先后的边无需重复添加（schedule 也会去重，这里保持映射干净）
+      if (!alreadyLinked) {
+        if (!extraPrerequisites.has(after.id)) {
+          extraPrerequisites.set(after.id, new Set());
+        }
+        extraPrerequisites.get(after.id).add(before.id);
+      }
+    }
+  }
+
+  /* ---------- 合并附加前置后重新排程（不改写入参） ---------- */
+  const mergedInput = inputCues.map((c) => {
+    const extras = extraPrerequisites.get(c.id);
+    if (!extras || extras.size === 0) return c;
+    return {
+      ...c,
+      prerequisites: Array.from(new Set([...(c.prerequisites || []), ...extras])),
+    };
+  });
+  const suggested = schedule(mergedInput);
+
+  /* ---------- 逐项对比：原时间 / 建议时间 / 延后量 / 新增超时 ---------- */
+  const suggestions = [];
+  for (const s of suggested.cues) {
+    const b = baseById.get(s.id);
+    if (!b.scheduled) {
+      // 原本位于环上或被环阻塞：保留不可排程标记，不参与错峰
+      suggestions.push({
+        id: s.id,
+        ref: s.ref,
+        title: s.title,
+        actors: s.actors,
+        participated: false,
+        inCycle: !!b.inCycle,
+        blockedByCycle: !!b.blockedByCycle,
+        baseStart: null,
+        baseFinish: null,
+        suggestedStart: null,
+        suggestedFinish: null,
+        deltaStart: null,
+        deltaFinish: null,
+        baseOverdue: false,
+        suggestedOverdue: false,
+        newOverdue: false,
+      });
+      continue;
+    }
+
+    const deltaStart = s.earliestStart - b.earliestStart;
+    const deltaFinish = s.earliestFinish - b.earliestFinish;
+    suggestions.push({
+      id: s.id,
+      ref: s.ref,
+      title: s.title,
+      actors: s.actors,
+      participated: true,
+      inCycle: false,
+      blockedByCycle: false,
+      baseStart: b.earliestStart,
+      baseFinish: b.earliestFinish,
+      suggestedStart: s.earliestStart,
+      suggestedFinish: s.earliestFinish,
+      deltaStart,
+      deltaFinish,
+      baseOverdue: !!b.overdue,
+      suggestedOverdue: !!s.overdue,
+      newOverdue: !b.overdue && !!s.overdue,
+    });
+  }
+
+  suggestions.sort((a, b) => {
+    if (a.participated && b.participated) {
+      if (a.suggestedStart !== b.suggestedStart) return a.suggestedStart - b.suggestedStart;
+      return (a.ref || String(a.id)).localeCompare(b.ref || String(b.id), 'zh');
+    }
+    if (a.participated !== b.participated) return a.participated ? -1 : 1;
+    if (a.inCycle !== b.inCycle) return a.inCycle ? -1 : 1;
+    return (a.ref || String(a.id)).localeCompare(b.ref || String(b.id), 'zh');
+  });
+
+  const newOverdue = suggestions.filter((x) => x.newOverdue);
+  // 实际新增的去重前置边数（同一对提示点可能由多名演员触发，只算一条）
+  const addedLinkCount = Array.from(extraPrerequisites.values()).reduce(
+    (n, set) => n + set.size,
+    0
+  );
+
+  return {
+    summary: {
+      actors: actorChains.length,
+      addedLinks: addedLinkCount,
+      moved: suggestions.filter((x) => x.participated && x.deltaStart > 0).length,
+      newOverdue: newOverdue.length,
+      unscheduled: suggestions.filter((x) => !x.participated).length,
+      baseConflicts: baseline.conflicts.length,
+      suggestedConflicts: suggested.conflicts.length,
+    },
+    actorChains,
+    actorLinks,
+    suggestions,
+    newOverdue,
+    baseline,
+    suggested,
+  };
+}
+
 /** 冲突条目里引用提示点时只保留展示所需的字段 */
 function conflictCueRef(c) {
   return {
@@ -424,4 +587,4 @@ function findCyclePath(cues, component) {
   return nodes;
 }
 
-module.exports = { schedule, simulateDelay };
+module.exports = { schedule, simulateDelay, suggestActorStagger };
