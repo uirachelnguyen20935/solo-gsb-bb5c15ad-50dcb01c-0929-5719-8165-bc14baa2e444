@@ -1,0 +1,21 @@
+services:
+  cue-scheduler:
+    build: .
+    image: cue-scheduler:latest
+    container_name: cue-scheduler
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      # 容器内监听端口（与左侧映射的容器端口保持一致）
+      PORT: 3000
+      HOST: 0.0.0.0
+      # SQLite 数据库文件位置（挂载到命名卷持久化）
+      DB_PATH: /app/data/app.db
+      # 首次启动且数据库为空时写入示例走台数据；设为 false 可关闭
+      SEED_SAMPLE: "true"
+    volumes:
+      - cue-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  cue-data:

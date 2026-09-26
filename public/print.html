@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>走台单（打印视图）</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body class="print-page">
+  <div class="print-toolbar no-print">
+    <a class="btn btn-ghost" href="/">← 返回排程</a>
+    <button class="btn btn-primary" onclick="window.print()">🖨 打印 / 另存为 PDF</button>
+  </div>
+
+  <main class="print-sheet">
+    <header class="print-head">
+      <div>
+        <h1>走台排练单</h1>
+        <p class="subtitle" id="print-subtitle">按最早开始时间排序</p>
+      </div>
+      <div class="print-meta">
+        <div>日期：__________________</div>
+        <div>场地：__________________</div>
+        <div>舞台监督：______________</div>
+      </div>
+    </header>
+
+    <div id="cycle-banner" class="banner banner-danger hidden"></div>
+    <div id="conflict-banner" class="banner banner-warn hidden"></div>
+
+    <table class="cue-table print-table">
+      <thead>
+        <tr>
+          <th style="width:36px">#</th>
+          <th style="width:70px">编号</th>
+          <th>提示点</th>
+          <th class="num" style="width:70px">时长</th>
+          <th class="num" style="width:90px">开始</th>
+          <th class="num" style="width:90px">结束</th>
+          <th class="num" style="width:90px">最晚完成</th>
+          <th class="num" style="width:80px">最迟开始</th>
+          <th class="num" style="width:84px">连锁余量</th>
+          <th>前置</th>
+          <th style="width:90px">演员</th>
+          <th style="width:110px">状态 / 签字</th>
+        </tr>
+      </thead>
+      <tbody id="cue-tbody"></tbody>
+    </table>
+
+    <footer class="print-foot">
+      <span>排程生成时间：<em id="gen-time"></em></span>
+      <span>超期项目以 ⚠ 标注；环依赖 / 被阻塞项目无法排程，需先解除依赖；⚠ 演员冲突 表示同一演员时间重叠，需调整演员或排程。连锁余量为最迟允许开始减计算开始（沿自身及所有下游最晚完成时间逆推），<strong>零或负值</strong>表示已无延后空间或截止时间已不可满足。</span>
+    </footer>
+  </main>
+
+  <script src="/js/common.js"></script>
+  <script src="/js/print.js"></script>
+</body>
+</html>

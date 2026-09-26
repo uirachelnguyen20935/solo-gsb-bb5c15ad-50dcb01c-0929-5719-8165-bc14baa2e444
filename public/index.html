@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>走台排程 · 小剧场提示点调度</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">🎭</span>
+      <div>
+        <h1>走台排程</h1>
+        <p class="subtitle">小剧场提示点调度 · 时间以开排零点 00:00:00 起算</p>
+      </div>
+    </div>
+    <div class="actions">
+      <a class="btn btn-ghost" href="/print" target="_blank">🖨 走台单 / 打印视图</a>
+      <button class="btn" id="btn-import">📥 CSV 批量导入</button>
+      <button class="btn btn-primary" id="btn-new">＋ 新增提示点</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <div id="cycle-banner" class="banner banner-danger hidden"></div>
+    <div id="conflict-banner" class="banner banner-warn hidden"></div>
+    <div id="sim-banner" class="banner banner-info hidden"></div>
+    <div id="ok-banner" class="banner banner-ok hidden"></div>
+
+    <section class="stats" id="stats"></section>
+
+    <section class="card sim-card" id="sim-card">
+      <div class="card-head">
+        <h2>延误推演（仅模拟，不保存）</h2>
+        <span class="hint">选择一个已排程提示点，推演其开始时间整体延后的影响；环上或被环阻塞的提示点不可选</span>
+      </div>
+      <form id="sim-form" class="sim-form">
+        <div class="sim-field">
+          <label for="sim-cue">延误起点</label>
+          <select id="sim-cue" name="cueId"></select>
+        </div>
+        <div class="sim-field">
+          <label for="sim-delay">延误量</label>
+          <input type="text" id="sim-delay" name="delay" placeholder="非负，如 10 或 1:30" />
+          <small class="hint">纯数字按分钟；也可用 <code>MM:SS</code> / <code>H:MM:SS</code></small>
+        </div>
+        <div class="sim-ops">
+          <button type="submit" class="btn btn-primary">开始推演</button>
+          <button type="button" class="btn btn-ghost" id="btn-sim-clear">清除推演</button>
+        </div>
+      </form>
+      <div class="form-error hidden sim-error" id="sim-error"></div>
+      <div id="sim-result"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2 id="schedule-title">走台单（按最早开始时间排序）</h2>
+        <span class="hint" id="schedule-hint">修改任一项后自动重新排程</span>
+      </div>
+      <div class="table-wrap">
+        <table class="cue-table">
+          <thead>
+            <tr>
+              <th class="col-seq">#</th>
+              <th>提示点</th>
+              <th class="num">时长</th>
+              <th class="num">最早开始<br><small>（录入）</small></th>
+              <th>前置提示点</th>
+              <th>演员</th>
+              <th class="num">计算开始</th>
+              <th class="num">计算结束</th>
+              <th class="num">最晚完成</th>
+              <th class="num">浮动</th>
+              <th class="num">最迟允许开始<br><small>（连锁逆推）</small></th>
+              <th class="num">连锁余量</th>
+              <th>状态</th>
+              <th class="col-ops">操作</th>
+            </tr>
+          </thead>
+          <tbody id="cue-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- 新增 / 编辑弹窗 -->
+  <div class="modal-mask hidden" id="modal-mask">
+    <div class="modal" role="dialog" aria-modal="true">
+      <h2 id="modal-title">新增提示点</h2>
+      <form id="cue-form">
+        <input type="hidden" name="id" />
+
+        <div class="form-row">
+          <label>提示点编号 <small>如 Q6，可留空</small></label>
+          <input type="text" name="ref" placeholder="Q6" maxlength="20" />
+        </div>
+
+        <div class="form-row">
+          <label>名称 <span class="req">*</span></label>
+          <input type="text" name="title" required maxlength="100" placeholder="如：第二场灯光转换" />
+        </div>
+
+        <div class="form-grid">
+          <div class="form-row">
+            <label>时长 <span class="req">*</span></label>
+            <input type="text" name="duration" required placeholder="分钟，如 10 或 1:30" />
+            <small>纯数字按分钟；也可用 <code>MM:SS</code> / <code>H:MM:SS</code></small>
+          </div>
+          <div class="form-row">
+            <label>最早开始时间</label>
+            <input type="text" name="minStart" placeholder="00:00:00" />
+            <small>相对开排零点，如 <code>30:00</code></small>
+          </div>
+          <div class="form-row">
+            <label>最晚完成时间</label>
+            <input type="text" name="maxFinish" placeholder="可留空" />
+            <small>留空表示不限</small>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <label>演员 <small>可填多名，用逗号或顿号分隔</small></label>
+          <input type="text" name="actors" placeholder="如：林晓、周航" />
+          <small>同一演员若被排到时间重叠的提示点，保存后会在列表与走台单中标出冲突。</small>
+        </div>
+
+        <div class="form-row">
+          <label>前置提示点</label>
+          <div class="pre-list" id="pre-list"></div>
+          <small>本提示点须等全部前置完成后方可开始；形成环依赖时会被标出。</small>
+        </div>
+
+        <div class="form-error hidden" id="form-error"></div>
+
+        <div class="modal-ops">
+          <button type="button" class="btn btn-ghost" id="btn-cancel">取消</button>
+          <button type="submit" class="btn btn-primary">保存并重新排程</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- CSV 批量导入弹窗 -->
+  <div class="modal-mask hidden" id="import-mask">
+    <div class="modal modal-wide" role="dialog" aria-modal="true">
+      <h2>CSV 批量导入提示点</h2>
+      <div class="import-help">
+        <p>
+          表头固定为 <code>ref,title,duration,minStart,maxFinish,actors,prerequisites</code>；
+          演员与前置提示点的多个值用 <code>|</code> 分隔；前置可填写文件内（含后面行）的 ref
+          或现有提示点的唯一 ref；时间格式与手动录入一致（时长纯数字按分钟）。
+          支持标准 CSV 引号转义（字段含逗号时用双引号包裹，字段内引号写成两个
+          <code>&quot;&quot;</code>），单次最多 100 行。
+        </p>
+        <details>
+          <summary>查看 CSV 示例</summary>
+          <pre>ref,title,duration,minStart,maxFinish,actors,prerequisites
+Q7,灯光编程,10,0:00,,王小明|李华,
+Q8,音效联调,5:30,0:30:00,1:00:00,李华,Q7
+Q9,"带妆彩排，第一段",15,,2:00:00,王小明|李华,Q7|Q8</pre>
+        </details>
+      </div>
+      <div class="import-file-row">
+        <input type="file" id="import-file" accept=".csv,text/csv" />
+        <button type="button" class="btn btn-primary" id="btn-import-preview" disabled>预览</button>
+      </div>
+      <div class="form-error hidden" id="import-error"></div>
+      <div id="import-preview"></div>
+      <div class="modal-ops">
+        <button type="button" class="btn btn-ghost" id="btn-import-cancel">取消</button>
+        <button type="button" class="btn btn-primary" id="btn-import-commit" disabled>确认导入</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/common.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>

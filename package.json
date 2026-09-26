@@ -1,0 +1,18 @@
+{
+  "name": "cue-scheduler",
+  "version": "1.0.0",
+  "description": "小剧场走台排程 Web 应用：按提示点依赖关系自动计算最早开始/结束时间，检测环依赖与超时项目",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "express": "^4.21.2"
+  }
+}
