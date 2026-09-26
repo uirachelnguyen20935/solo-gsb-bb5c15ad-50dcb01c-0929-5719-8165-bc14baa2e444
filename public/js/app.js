@@ -7,6 +7,7 @@ let state = {
   conflicts: [], // 正式排程的演员时间冲突
   editingId: null,
   sim: null, // 延误推演结果（null 表示未推演 / 已清除）
+  stagger: null, // 演员错峰建议结果（null 表示未生成 / 已清除）
 };
 
 const els = {
@@ -26,6 +27,10 @@ const els = {
   simDelay: document.getElementById('sim-delay'),
   simError: document.getElementById('sim-error'),
   simResult: document.getElementById('sim-result'),
+  staggerBtn: document.getElementById('btn-stagger'),
+  staggerClearBtn: document.getElementById('btn-stagger-clear'),
+  staggerError: document.getElementById('stagger-error'),
+  staggerResult: document.getElementById('stagger-result'),
   scheduleTitle: document.getElementById('schedule-title'),
   scheduleHint: document.getElementById('schedule-hint'),
   importMask: document.getElementById('import-mask'),
@@ -44,6 +49,8 @@ els.mask.addEventListener('click', (e) => {
 els.form.addEventListener('submit', onSubmit);
 els.simForm.addEventListener('submit', onSimulate);
 document.getElementById('btn-sim-clear').addEventListener('click', clearSimulation);
+els.staggerBtn.addEventListener('click', onStagger);
+els.staggerClearBtn.addEventListener('click', clearStagger);
 document.getElementById('btn-import').addEventListener('click', openImportModal);
 document.getElementById('btn-import-cancel').addEventListener('click', closeImportModal);
 els.importMask.addEventListener('click', (e) => {
@@ -78,6 +85,8 @@ async function refresh() {
   state.conflicts = scheduleResult.conflicts || [];
   // 正式数据已变化（增删改后），内存中的推演结果失效，恢复正式排程视图
   if (state.sim) resetSimulation({ keepInput: true });
+  // 正式数据已变化，内存中的错峰建议随之失效，需重新生成
+  if (state.stagger) resetStagger();
   // 数据刷新后，上一次导入的成功提示不再适用
   els.okBanner.classList.add('hidden');
   render();
@@ -90,6 +99,7 @@ function render() {
   renderStats();
   renderSimSelect();
   renderSimResult();
+  renderStagger();
   renderTable();
 }
 
@@ -349,6 +359,191 @@ function simRowBadges(a) {
   }
   if (!badges.length) return '<span class="hint">—</span>';
   return badges.join(' ');
+}
+
+/* ---------- 演员错峰建议 ---------- */
+
+async function onStagger() {
+  els.staggerError.classList.add('hidden');
+  els.staggerBtn.disabled = true;
+  try {
+    state.stagger = await CS.api('/api/schedule/stagger-suggestion');
+    render();
+  } catch (err) {
+    staggerError(err.message);
+  } finally {
+    els.staggerBtn.disabled = false;
+  }
+}
+
+function staggerError(msg) {
+  els.staggerError.textContent = msg;
+  els.staggerError.classList.remove('hidden');
+}
+
+/** 清除建议：仅丢弃内存中的候选方案，正式排程视图不受影响 */
+function clearStagger() {
+  resetStagger();
+  render();
+}
+
+function resetStagger() {
+  state.stagger = null;
+  els.staggerError.classList.add('hidden');
+  els.staggerError.textContent = '';
+}
+
+function renderStagger() {
+  const st = state.stagger;
+  if (!st) {
+    els.staggerResult.innerHTML = '';
+    els.staggerBtn.textContent = '生成错峰建议';
+    els.staggerClearBtn.classList.add('hidden');
+    return;
+  }
+  els.staggerBtn.textContent = '重新生成';
+  els.staggerClearBtn.classList.remove('hidden');
+
+  const label = (c) => `${c.ref ? CS.esc(c.ref) + ' ' : ''}「${CS.esc(c.title)}」`;
+  const delayed = st.items.filter((it) => it.deltaStart > 0);
+  const maxDelay = delayed.length ? Math.max(...delayed.map((it) => it.deltaStart)) : 0;
+
+  const stat = (cls, num, text) =>
+    `<div class="stat ${cls}"><div class="num">${num}</div><div class="label">${text}</div></div>`;
+  const summaryHtml =
+    `<div class="sim-summary">` +
+    stat('', st.actorChains.length, '参与错峰演员') +
+    stat('', delayed.length, '被延后提示点') +
+    stat('', CS.fmtDur(maxDelay), '最大延后量') +
+    stat(st.newOverdue.length ? 'danger' : '', st.newOverdue.length, '新增超时') +
+    stat(st.excluded.length ? 'warn' : '', st.excluded.length, '不参与（环/阻塞）') +
+    `</div>`;
+
+  // 每名演员的错峰顺序链（按正式开始时间、ID 排序后相邻两项依次衔接）
+  const itemById = new Map(st.items.map((it) => [it.id, it]));
+  const chainsHtml = st.actorChains.length
+    ? `<div class="stagger-chains">${st.actorChains
+        .map(
+          (ch) =>
+            `<div class="stagger-chain"><span class="actor-name">${CS.esc(ch.actor)}</span>` +
+            ch.cues
+              .map((c) => {
+                const it = itemById.get(c.id);
+                const time = it ? ` <code>${CS.fmtTime(it.suggestedStart)}</code>` : '';
+                return `<span class="chain-cue">${CS.esc(
+                  c.ref || c.title
+                )}${time}</span>`;
+              })
+              .join('<span class="chain-arrow">→</span>') +
+            `</div>`
+        )
+        .join('')}</div>`
+    : '';
+
+  const rowsHtml = st.items.length
+    ? st.items.map((it, i) => staggerRowHtml(it, i)).join('')
+    : `<tr><td colspan="9" class="sim-empty">暂无可排程提示点。</td></tr>`;
+
+  const tableHtml = `
+    <div class="table-wrap">
+      <table class="cue-table sim-table">
+        <thead>
+          <tr>
+            <th class="col-seq">#</th>
+            <th>提示点</th>
+            <th>演员</th>
+            <th class="num">原开始</th>
+            <th class="num">原结束</th>
+            <th class="num">建议开始</th>
+            <th class="num">建议结束</th>
+            <th class="num">延后量</th>
+            <th>状态</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>`;
+
+  const noteHtml = !delayed.length
+    ? `<div class="sim-sub sim-sub-ok"><h4>无需错峰</h4><span>${
+        st.actorChains.length
+          ? '正式排程中同一演员的提示点已互不重叠，建议方案与正式排程一致。'
+          : '没有演员同时参演两个及以上已排程提示点，建议方案与正式排程一致。'
+      }</span></div>`
+    : '';
+
+  const overdueHtml = st.newOverdue.length
+    ? `<div class="sim-sub sim-sub-danger">
+         <h4>新增超时（${st.newOverdue.length}）</h4>
+         <ul>${st.newOverdue
+           .map(
+             (it) =>
+               `<li>${label(it)}：建议结束 ${CS.fmtTime(
+                 it.suggestedFinish
+               )}，超过最晚完成 ${CS.fmtTime(it.maxFinish)}（结束时间后移 ${CS.fmtDur(
+                 it.deltaFinish
+               )}）</li>`
+           )
+           .join('')}</ul>
+       </div>`
+    : `<div class="sim-sub sim-sub-ok"><h4>新增超时（0）</h4><span>建议方案没有新出现的超时。</span></div>`;
+
+  const excludedHtml = st.excluded.length
+    ? `<div class="sim-sub sim-sub-warn">
+         <h4>不参与错峰（${st.excluded.length}）</h4>
+         <ul>${st.excluded
+           .map(
+             (c) =>
+               `<li>${label(c)}：${c.inCycle ? '环依赖' : '环阻塞'}，保留不可排程标记</li>`
+           )
+           .join('')}</ul>
+       </div>`
+    : '';
+
+  els.staggerResult.innerHTML =
+    summaryHtml + chainsHtml + noteHtml + tableHtml + overdueHtml + excludedHtml;
+}
+
+function staggerRowHtml(it, i) {
+  const delta =
+    it.deltaStart === 0
+      ? '<span class="sim-delta-zero">±0:00</span>'
+      : `<span class="sim-delta-up">+${CS.fmtDur(it.deltaStart)}</span>`;
+  const actors = (it.actors || []).length
+    ? `<div class="actors">${it.actors
+        .map((name) => `<span class="actor-tag">${CS.esc(name)}</span>`)
+        .join('')}</div>`
+    : '<span class="hint">—</span>';
+
+  let status;
+  if (it.newOverdue) {
+    status = '<span class="badge badge-overdue">⚠ 新增超时</span>';
+  } else if (it.suggestedOverdue) {
+    status =
+      '<span class="badge badge-muted" title="正式排程中该项已超过最晚完成时间">原有超时</span>';
+  } else if (it.deltaStart > 0) {
+    status = '<span class="badge badge-delayed">已错峰</span>';
+  } else {
+    status = '<span class="hint">不变</span>';
+  }
+
+  return `
+    <tr class="${it.deltaStart > 0 ? 'row-staggered' : ''}${it.newOverdue ? ' row-overdue' : ''}">
+      <td>${i + 1}</td>
+      <td>
+        <span class="cue-ref">${CS.esc(it.ref || `#${it.id}`)}</span>
+        <span class="cue-name">${CS.esc(it.title)}</span>
+      </td>
+      <td>${actors}</td>
+      <td class="num t-time">${CS.fmtTime(it.baseStart)}</td>
+      <td class="num t-time">${CS.fmtTime(it.baseFinish)}</td>
+      <td class="num t-time">${CS.fmtTime(it.suggestedStart)}</td>
+      <td class="num t-time ${it.newOverdue ? 't-overdue' : ''}">${CS.fmtTime(
+        it.suggestedFinish
+      )}</td>
+      <td class="num">${delta}</td>
+      <td>${status}</td>
+    </tr>`;
 }
 
 /* ---------- 统计与走台单 ---------- */

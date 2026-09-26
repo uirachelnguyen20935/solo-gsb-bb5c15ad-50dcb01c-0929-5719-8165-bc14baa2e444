@@ -16,6 +16,11 @@
  *
  * 输入 cues: [{ id, ref, title, duration, minStart, maxFinish, actors:[名字...], prerequisites:[id...] }]
  * 输出: { cues:[...计算结果], cycle:{nodes, path}|null, conflicts:[演员冲突...] }
+ *
+ * 另提供两个纯内存演算（均不修改入参）：
+ * - simulateDelay：延误推演，抬高某起点的最早开始约束后重新排程；
+ * - suggestStagger：演员错峰建议，把同一演员已排程提示点的相邻先后关系叠加进
+ *   前置依赖后重新排程，得到一版同演员不再重叠的候选走台时间。
  */
 
 function schedule(inputCues) {
@@ -372,6 +377,117 @@ function simulateDelay(inputCues, cueId, delaySeconds) {
   };
 }
 
+/**
+ * 演员错峰建议（纯内存计算，不修改入参，也不涉及数据库）：
+ * 1. 先用 schedule 得到正式（基线）排程；
+ * 2. 对每名演员，将其已排程提示点按「正式开始时间、ID」排序，把相邻两项的
+ *    先后关系（前一项 → 后一项）作为额外前置依赖叠加到原有前置依赖上；
+ * 3. 基于叠加后的全部约束重新排程：同一演员的提示点不再重叠；多名演员共用的
+ *    提示点被延后时，沿其全部相关依赖（原有前置/后继及其他演员的错峰边）传递；
+ * 4. 对比两版结果：每项的原时间与建议时间、延后量，以及建议方案中新出现的超时。
+ *
+ * 错峰边只从「开始更早（或同时开始但 ID 更小）」的提示点指向更晚的提示点；而原有
+ * 依赖边总是从严格更早开始的提示点指向更晚的（后继开始 ≥ 前驱结束 > 前驱开始）。
+ * 沿任何一条边，（开始时间, ID）都严格递增，因此叠加错峰边不会构成新环，基线中
+ * 可排程的提示点在建议排程中依然可排程。环上及被环阻塞的提示点不加错峰边，
+ * 在建议排程中保留不可排程标记、不参与错峰。
+ */
+function suggestStagger(inputCues) {
+  const baseline = schedule(inputCues);
+
+  /* ---------- 每名演员的已排程提示点按（正式开始, ID）排序，相邻两项连成错峰边 ---------- */
+  const cuesByActor = new Map();
+  for (const c of baseline.cues) {
+    if (!c.scheduled) continue; // 环上 / 被环阻塞：不参与错峰
+    for (const actor of c.actors) {
+      const list = cuesByActor.get(actor);
+      if (list) list.push(c);
+      else cuesByActor.set(actor, [c]);
+    }
+  }
+
+  const extraPres = new Map(); // 提示点 id -> 需要追加的前置 id 集合
+  const actorChains = [];
+  for (const [actor, list] of cuesByActor) {
+    if (list.length < 2) continue;
+    const sorted = list
+      .slice()
+      .sort((a, b) => a.earliestStart - b.earliestStart || a.id - b.id);
+    actorChains.push({
+      actor,
+      cues: sorted.map((c) => ({ id: c.id, ref: c.ref, title: c.title })),
+    });
+    for (let i = 1; i < sorted.length; i++) {
+      const prevId = sorted[i - 1].id;
+      const nextId = sorted[i].id;
+      if (!extraPres.has(nextId)) extraPres.set(nextId, new Set());
+      extraPres.get(nextId).add(prevId);
+    }
+  }
+  actorChains.sort((a, b) => a.actor.localeCompare(b.actor, 'zh'));
+
+  /* ---------- 在原有前置依赖上叠加错峰边，重新排程 ---------- */
+  const augmentedInput = inputCues.map((c) => {
+    const extra = extraPres.get(c.id);
+    if (!extra) return c;
+    return { ...c, prerequisites: [...(c.prerequisites || []), ...extra] };
+  });
+  const suggested = schedule(augmentedInput);
+
+  /* ---------- 逐项对比：原时间 / 建议时间 / 延后量 / 新增超时 ---------- */
+  const baseById = new Map(baseline.cues.map((c) => [c.id, c]));
+  const items = [];
+  const excluded = [];
+  for (const sug of suggested.cues) {
+    const base = baseById.get(sug.id);
+    if (!base || !base.scheduled || !sug.scheduled) {
+      // 环上或被环阻塞：保留不可排程标记，不参与错峰
+      excluded.push({
+        id: sug.id,
+        ref: sug.ref,
+        title: sug.title,
+        inCycle: sug.inCycle,
+        blockedByCycle: sug.blockedByCycle,
+      });
+      continue;
+    }
+    items.push({
+      id: sug.id,
+      ref: sug.ref,
+      title: sug.title,
+      actors: sug.actors,
+      maxFinish: sug.maxFinish,
+      baseStart: base.earliestStart,
+      baseFinish: base.earliestFinish,
+      suggestedStart: sug.earliestStart,
+      suggestedFinish: sug.earliestFinish,
+      deltaStart: sug.earliestStart - base.earliestStart,
+      deltaFinish: sug.earliestFinish - base.earliestFinish,
+      baseOverdue: !!base.overdue,
+      suggestedOverdue: !!sug.overdue,
+      newOverdue: !base.overdue && !!sug.overdue,
+    });
+  }
+  // 候选走台单按建议开始时间排序（与正式走台单同一套排序习惯）
+  items.sort(
+    (a, b) =>
+      a.suggestedStart - b.suggestedStart ||
+      (a.ref || String(a.id)).localeCompare(b.ref || String(b.id), 'zh')
+  );
+  excluded.sort(
+    (a, b) => (a.ref || String(a.id)).localeCompare(b.ref || String(b.id), 'zh')
+  );
+
+  return {
+    actorChains,
+    items,
+    newOverdue: items.filter((it) => it.newOverdue),
+    excluded,
+    baseline,
+    suggested,
+  };
+}
+
 /** 冲突条目里引用提示点时只保留展示所需的字段 */
 function conflictCueRef(c) {
   return {
@@ -424,4 +540,4 @@ function findCyclePath(cues, component) {
   return nodes;
 }
 
-module.exports = { schedule, simulateDelay };
+module.exports = { schedule, simulateDelay, suggestStagger };

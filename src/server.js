@@ -36,6 +36,14 @@ app.get('/api/conflicts', (_req, res) => {
 });
 
 /**
+ * 演员错峰建议：只读接口。基于正式数据在内存中叠加同一演员相邻提示点的
+ * 先后约束后重新排程，返回候选走台时间；不写入数据库。
+ */
+app.get('/api/schedule/stagger-suggestion', (_req, res) => {
+  res.json(db.computeStaggerSuggestion());
+});
+
+/**
  * 延误推演：纯内存计算，不写入数据库。
  * body: { cueId: number, delay: "10" / "1:30" / 整数秒 ... }（与时长输入一致：纯数字按分钟）
  */

@@ -3,7 +3,7 @@
 const path = require('path');
 const fs = require('fs');
 const Database = require('better-sqlite3');
-const { schedule, simulateDelay } = require('./scheduler');
+const { schedule, simulateDelay, suggestStagger } = require('./scheduler');
 
 let db;
 let createCueTx;
@@ -119,6 +119,14 @@ function computeSchedule() {
  */
 function computeDelaySimulation(cueId, delaySeconds) {
   return simulateDelay(loadCueModels(), cueId, delaySeconds);
+}
+
+/**
+ * 演员错峰建议：从数据库读取正式数据，仅在内存中叠加同一演员相邻提示点的
+ * 先后约束后重新排程，给出一版不改动正式数据的候选走台时间。
+ */
+function computeStaggerSuggestion() {
+  return suggestStagger(loadCueModels());
 }
 
 /** 从数据库重建排程器所需的提示点模型 */
@@ -316,6 +324,7 @@ module.exports = {
   getCue,
   computeSchedule,
   computeDelaySimulation,
+  computeStaggerSuggestion,
   createCue,
   updateCue,
   deleteCue,

@@ -54,6 +54,20 @@
       <div id="sim-result"></div>
     </section>
 
+    <section class="card stagger-card" id="stagger-card">
+      <div class="card-head">
+        <h2>演员错峰建议（候选方案，不改动正式数据）</h2>
+        <span class="hint">按正式开始时间与 ID 为同一演员的提示点排序，把相邻两项的先后关系叠加到原有前置依赖上重新演算；环上或被环阻塞的提示点不参与错峰</span>
+      </div>
+      <div class="stagger-ops">
+        <button type="button" class="btn btn-primary" id="btn-stagger">生成错峰建议</button>
+        <button type="button" class="btn btn-ghost hidden" id="btn-stagger-clear">清除建议</button>
+        <span class="hint">建议为只读候选方案，不写入数据库；刷新页面后仍显示正式排程</span>
+      </div>
+      <div class="form-error hidden stagger-error" id="stagger-error"></div>
+      <div id="stagger-result"></div>
+    </section>
+
     <section class="card">
       <div class="card-head">
         <h2 id="schedule-title">走台单（按最早开始时间排序）</h2>

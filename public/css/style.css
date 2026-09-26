@@ -336,6 +336,43 @@ tr.row-sim-affected:hover { background: #e7eef8; }
   padding: 0 5px;
 }
 
+/* ---------- 演员错峰建议 ---------- */
+.stagger-card { margin-bottom: 16px; }
+.stagger-ops {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 20px 14px;
+  flex-wrap: wrap;
+}
+.stagger-error { margin: 0 20px 14px; }
+.stagger-chains {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 20px 14px;
+}
+.stagger-chain { font-size: 13px; }
+.stagger-chain .actor-name { font-weight: 600; margin-right: 4px; }
+.chain-cue {
+  display: inline-block;
+  background: #f6f2ec;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 8px;
+  margin: 1px 2px;
+}
+.chain-cue code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.chain-arrow { color: var(--muted); margin: 0 2px; }
+.badge-delayed { background: #e1ebf6; color: #2f5373; border: 1px solid #b9cde2; }
+.badge-muted { background: #f0ede7; color: #6f665b; border: 1px solid var(--line); }
+tr.row-staggered { background: #f1f5fb; }
+tr.row-staggered:hover { background: #e7eef8; }
+
 /* ---------- 弹窗表单 ---------- */
 .modal-mask {
   position: fixed; inset: 0;
